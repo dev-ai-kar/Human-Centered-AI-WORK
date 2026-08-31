@@ -1,5 +1,16 @@
 import streamlit as st
 from openai import OpenAI
+import fitz
+
+# Function to read PDF files
+def read_pdf(uploaded_file):
+    """Read a PDF file and extract text."""
+    pdf_document = fitz.open(stream=uploaded_file.read(), filetype="pdf")
+    text = ""
+    for page_num in range(len(pdf_document)):
+        page = pdf_document[page_num]
+        text += page.get_text()
+    return text
 
 # Show title and description.
 st.title("📄 Document question answering")
@@ -21,7 +32,7 @@ else:
 
     # Let the user upload a file via `st.file_uploader`.
     uploaded_file = st.file_uploader(
-        "Upload a document (.txt or .md)", type=("txt", "md")
+        "Upload a document (.txt or .pdf)", type=("txt", "pdf")
     )
 
     # Ask the user for a question via `st.text_area`.
@@ -34,20 +45,29 @@ else:
     if uploaded_file and question:
 
         # Process the uploaded file and question.
-        document = uploaded_file.read().decode()
-        messages = [
-            {
-                "role": "user",
-                "content": f"Here's a document: {document} \n\n---\n\n {question}",
-            }
-        ]
+        file_extension = uploaded_file.name.split('.')[-1]
+        if file_extension == 'txt':
+            document = uploaded_file.read().decode()
+        elif file_extension == 'pdf':
+            document = read_pdf(uploaded_file)
+        else:
+            st.error("Unsupported file type.")
+            document = None
+        
+        if document:
+            messages = [
+                {
+                    "role": "user",
+                    "content": f"Here's a document: {document} \n\n---\n\n {question}",
+                }
+            ]
 
-        # Generate an answer using the OpenAI API.
-        stream = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=messages,
-            stream=True,
-        )
+            # Generate an answer using the OpenAI API.
+            stream = client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=messages,
+                stream=True,
+            )
 
-        # Stream the response to the app using `st.write_stream`.
-        st.write_stream(stream)
+            # Stream the response to the app using `st.write_stream`.
+            st.write_stream(stream)
