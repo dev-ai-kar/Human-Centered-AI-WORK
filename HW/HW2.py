@@ -1,12 +1,27 @@
 import streamlit as st
 from openai import OpenAI
+import requests
+from bs4 import BeautifulSoup
+
+
+def read_url_content(url):
+    try:
+        response = requests.get(url)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.content, "html.parser")
+        return soup.get_text()
+    except requests.RequestException as error:
+        print(f"Error reading {url}: {error}")
+        return None
 
 # Show title and description.
-st.title("📄 Document question answering")
+st.title("📄 Document summarization")
 st.write(
-    "Upload a document below and ask a question about it – GPT will answer! "
+    "Enter a URL below and choose a summary format. GPT will summarize it! "
     "To use this app, you need to provide an OpenAI API key, which you can get [here](https://platform.openai.com/account/api-keys). "
 )
+
+url = st.text_input("Website URL", placeholder="https://example.com/article")
 
 # Sidebar: Summary options and model selection
 st.sidebar.header("⚙️ Options")
@@ -16,7 +31,6 @@ st.sidebar.subheader("📝 Summary Format")
 summary_option = st.sidebar.radio(
     "Choose a summary format:",
     options=[
-        "None",
         "100 words",
         "2 connecting paragraphs",
         "5 bullet points"
@@ -47,33 +61,20 @@ if openai_api_key:
     # Create an OpenAI client.
     client = OpenAI(api_key=openai_api_key)
 
-    # Let the user upload a file via `st.file_uploader`.
-    uploaded_file = st.file_uploader(
-        "Upload a document (.txt or .md)", type=("txt", "md")
-    )
+    if url:
+        document = read_url_content(url)
 
-    # Ask the user for a question via `st.text_area`.
-    question = st.text_area(
-        "Now ask a question about the document!",
-        placeholder="Can you give me a short summary?",
-        disabled=not uploaded_file,
-    )
+        if not document or not document.strip():
+            st.error("Could not read that URL or it did not contain any readable text.")
+            st.stop()
 
-    if uploaded_file and (question or summary_option != "None"):
-
-        # Process the uploaded file and question.
-        document = uploaded_file.read().decode()
-        
-        # Build the prompt based on summary option
-        if summary_option != "None":
-            if summary_option == "100 words":
-                prompt = "Please summarize the following document in exactly 100 words."
-            elif summary_option == "2 connecting paragraphs":
-                prompt = "Please summarize the following document in 2 well-connected paragraphs."
-            elif summary_option == "5 bullet points":
-                prompt = "Please summarize the following document in 5 bullet points."
+        # Build the prompt based on the selected summary format.
+        if summary_option == "100 words":
+            prompt = "Please summarize the following document in exactly 100 words."
+        elif summary_option == "2 connecting paragraphs":
+            prompt = "Please summarize the following document in 2 well-connected paragraphs."
         else:
-            prompt = question
+            prompt = "Please summarize the following document in 5 bullet points."
         
         messages = [
             {
