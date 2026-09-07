@@ -38,6 +38,12 @@ summary_option = st.sidebar.radio(
     index=0
 )
 
+output_language = st.sidebar.selectbox(
+    "Choose an output language:",
+    options=["English", "French", "Spanish"],
+    index=0,
+)
+
 # Model selection
 st.sidebar.subheader("🤖 Model Selection")
 use_advanced_model = st.sidebar.checkbox(
@@ -75,6 +81,8 @@ if openai_api_key:
             prompt = "Please summarize the following document in 2 well-connected paragraphs."
         else:
             prompt = "Please summarize the following document in 5 bullet points."
+
+        prompt += f" Output the summary entirely in {output_language}."
         
         messages = [
             {
