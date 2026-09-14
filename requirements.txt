@@ -4,3 +4,4 @@ PyMuPDF
 requests
 beautifulsoup4
 google-genai
+tiktoken
