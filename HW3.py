@@ -21,9 +21,10 @@ def read_url_content(url):
 # Show title and description.
 st.title("Conversational AI")
 st.write(
-    "Ask questions and get answers from GPT. This chatbot uses a turn-based "
-    "buffer with a maximum context token limit, and it can use up to two web "
-    "sources as extra context."
+    "This chatbot keeps a 2,000-token memory of the recent conversation and "
+    "stores the selected web source text in the system prompt so it stays in "
+    "context across turns. It can use up to two URLs as extra background "
+    "knowledge, and you can pick either OpenAI or Gemini as the model."
 )
 
 st.sidebar.header("⚙️ Options")
@@ -58,16 +59,17 @@ else:
 
 st.sidebar.markdown(f"**Selected Model:** `{model_to_use}`")
 
+TOKEN_MEMORY_LIMIT = 2000
 max_tokens = st.sidebar.number_input(
-    "Maximum context tokens",
-    min_value=256,
-    max_value=128000,
-    value=4000,
-    step=256,
+    "Conversation memory buffer (tokens)",
+    min_value=2000,
+    max_value=2000,
+    value=2000,
+    step=1,
     help=(
-        "Sets the maximum number of conversation tokens sent to the model. "
-        "A higher value keeps more recent history, while a lower value uses "
-        "less context."
+        "This chatbot uses a fixed 2,000-token memory buffer for the recent "
+        "conversation. The selected web context is always kept in the system "
+        "prompt and is never discarded."
     ),
 )
 
@@ -90,6 +92,18 @@ SYSTEM_MESSAGE = {
 }
 
 
+def build_system_message(source_context=None):
+    """Return the system prompt, including any URL context that should persist."""
+    system_message = dict(SYSTEM_MESSAGE)
+    if source_context and source_context.strip():
+        system_message["content"] = (
+            system_message["content"]
+            + "\n\nWeb context to keep in memory (use this in your answers):\n"
+            + source_context
+        )
+    return system_message
+
+
 def count_tokens(messages, model):
     """Count the tokens in a chat-completions message list."""
     try:
@@ -102,9 +116,9 @@ def count_tokens(messages, model):
     ) + 2
 
 
-def conversation_buffer(messages, token_limit, model):
-    """Return the system prompt and newest complete two-turn history."""
-    buffered_messages = [SYSTEM_MESSAGE]
+def conversation_buffer(messages, token_limit, model, source_context=None):
+    """Return the persistent system prompt and the newest conversation history."""
+    buffered_messages = [build_system_message(source_context)]
     history = messages[-4:]
 
     for message in history:
@@ -171,7 +185,10 @@ if prompt := st.chat_input("What would you like to ask?"):
         st.markdown(prompt)
 
     messages_for_request = conversation_buffer(
-        st.session_state.messages, max_tokens, model_to_use
+        st.session_state.messages,
+        TOKEN_MEMORY_LIMIT,
+        model_to_use,
+        source_context,
     )
     request_tokens = count_tokens(messages_for_request, model_to_use)
     st.caption(f"Request context: {request_tokens:,} tokens")
