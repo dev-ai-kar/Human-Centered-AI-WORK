@@ -2,6 +2,8 @@ import streamlit as st
 import sys
 from pathlib import Path
 
+from bs4 import BeautifulSoup
+
 # ChromaDB requires a newer SQLite version on Streamlit Community Cloud.
 import pysqlite3
 
@@ -10,21 +12,23 @@ sys.modules["sqlite3"] = sys.modules.pop("pysqlite3")
 import chromadb
 import tiktoken
 from openai import OpenAI
-from pypdf import PdfReader
 
 
 EMBEDDING_MODEL = "text-embedding-3-small"
-PDF_FOLDER = Path("./Lab-04-Data")
+HTML_FOLDER = Path("./su_orgs_hw4_data")
+VECTOR_DB_PATH = Path("./ChromaDB_for_HW")
+MODEL_NAME = "gpt-5-nano"
+MAX_INTERACTIONS = 5
 
 
 def create_collection():
     """Create or retrieve the persistent ChromaDB collection for Lab 4."""
-    chroma_client = chromadb.PersistentClient(path="./ChromaDB_for_Lab")
+    chroma_client = chromadb.PersistentClient(path=str(VECTOR_DB_PATH))
     return chroma_client.get_or_create_collection("Lab4Collection")
 
 
 def add_to_collection(collection, text, file_name):
-    """Embed PDF text with OpenAI and add it to the ChromaDB collection."""
+    """Embed a chunk of HTML text and add it to the ChromaDB collection."""
     client = st.session_state.openai_client
     response = client.embeddings.create(
         input=text,
@@ -39,22 +43,57 @@ def add_to_collection(collection, text, file_name):
     )
 
 
-def extract_text_from_pdf(pdf_path):
-    """Extract and combine text from every page in a PDF."""
-    reader = PdfReader(pdf_path)
-    return "\n".join(page.extract_text() or "" for page in reader.pages).strip()
+def extract_text_from_html(html_path):
+    """Convert an HTML org page into clean, readable text."""
+    soup = BeautifulSoup(html_path.read_text(encoding="utf-8", errors="ignore"), "html.parser")
+    for tag in soup(["script", "style", "noscript"]):
+        tag.decompose()
+    return soup.get_text("\n", strip=True)
 
 
-def load_pdfs_to_collection(folder_path, collection):
-    """Extract, embed, and store every PDF in a folder."""
+def chunk_html_text(text):
+    """Split each HTML page into two mini-documents.
+
+    This uses a paragraph-aware, two-part split: we turn the page into a list of
+    natural text blocks (paragraphs/sections), then divide those blocks into two
+    halves. That keeps related ideas together, reduces the chance of splitting a
+    sentence or concept in the middle, and gives each chunk enough context to be
+    useful for retrieval.
+    """
+    cleaned_text = " ".join(part.strip() for part in text.splitlines() if part.strip())
+    if not cleaned_text:
+        return []
+
+    # Fallback for pages that are very short or have little structure.
+    paragraphs = [part.strip() for part in cleaned_text.split("\n") if part.strip()]
+    if len(paragraphs) < 2:
+        midpoint = max(1, len(cleaned_text) // 2)
+        return [cleaned_text[:midpoint].strip(), cleaned_text[midpoint:].strip()]
+
+    midpoint = max(1, len(paragraphs) // 2)
+    first_chunk = " ".join(paragraphs[:midpoint]).strip()
+    second_chunk = " ".join(paragraphs[midpoint:]).strip()
+
+    return [first_chunk, second_chunk]
+
+
+def load_html_files_to_collection(folder_path, collection):
+    """Extract, chunk, embed, and store every HTML org file in a folder."""
     folder = Path(folder_path)
     loaded_files = []
 
-    for pdf_path in sorted(folder.glob("*.pdf")):
-        text = extract_text_from_pdf(pdf_path)
-        if text:
-            add_to_collection(collection, text, pdf_path.name)
-            loaded_files.append(pdf_path.name)
+    for html_path in sorted(folder.glob("*.html")):
+        text = extract_text_from_html(html_path)
+        if not text:
+            continue
+
+        chunks = chunk_html_text(text)
+        for chunk_index, chunk in enumerate(chunks, start=1):
+            if not chunk:
+                continue
+            chunk_id = f"{html_path.name}__chunk_{chunk_index}"
+            add_to_collection(collection, chunk, chunk_id)
+            loaded_files.append(chunk_id)
 
     return loaded_files
 
@@ -104,11 +143,13 @@ if "openai_client" not in st.session_state:
     st.session_state.openai_client = OpenAI(api_key=openai_api_key)
 
 # Persistent ChromaDB collection stored in the project directory, not in session state.
+# Only create and populate the vector DB when it doesn't already exist so the app can
+# be rerun without re-embedding all organization pages every time.
 collection = create_collection()
 
 loaded_count = collection.count()
-if loaded_count == 0:
-    loaded_files = load_pdfs_to_collection(PDF_FOLDER, collection)
+if not VECTOR_DB_PATH.exists() or loaded_count == 0:
+    loaded_files = load_html_files_to_collection(HTML_FOLDER, collection)
     loaded_count = len(loaded_files)
 
 # Show title and description.
@@ -123,9 +164,8 @@ if loaded_count > 0:
 else:
     st.warning("ChromaDB collection is empty. No documents were loaded yet.")
 
-model_to_use = st.sidebar.selectbox(
-    "Which model?", ("gpt-4o-mini", "gpt-4o"), index=0
-)
+model_to_use = MODEL_NAME
+st.sidebar.caption(f"Using model: {model_to_use}")
 max_tokens = st.sidebar.number_input(
     "Maximum context tokens",
     min_value=256,
@@ -147,19 +187,16 @@ if "messages" not in st.session_state:
 SYSTEM_MESSAGE = {
     "role": "system",
     "content": (
-        "You are a helpful course information assistant speaking to a "
-        "10-year-old. Use the supplied course-document context to answer "
-        "questions accurately. Clearly say when your answer uses the course "
-        "information, for example, 'Based on the course information...' Do "
-        "not invent course details. If the context does not answer the "
-        "question, say that the course documents do not provide that "
-        "information and then give a brief general answer if appropriate. "
-        "Use simple words, short sentences, and friendly examples. "
-        "First, answer the user's question clearly. After every answer, "
-        "ask exactly: Do you want more info? If the user says yes, give "
-        "useful additional information in simple language, then ask exactly "
-        "again: Do you want more info? If the user says no, reply exactly: "
-        "What can I help you with? Then wait for a new question."
+        "You are a helpful campus organizations assistant. Use the retrieved "
+        "organization information from the vector database as your main source of "
+        "truth. If the available context does not answer the question, say so "
+        "clearly and provide only a brief general answer. Do not invent details "
+        "about organizations, events, leadership, requirements, or contact info. "
+        "Answer in simple, friendly language that is easy for a college student to "
+        "understand. Keep answers concise and grounded in the retrieved context. "
+        "Remember the user’s recent conversation history, but do not rely on memory "
+        "for facts that are not in the current context. If the question asks for "
+        "a follow-up, connect it to the same organization or topic."
     ),
 }
 
@@ -176,6 +213,11 @@ def count_tokens(messages, model):
     ) + 2
 
 
+def trim_conversation_history(messages, max_interactions=MAX_INTERACTIONS):
+    """Keep only the last five user/assistant exchanges in memory."""
+    return messages[-(max_interactions * 2):]
+
+
 def rag_conversation_buffer(messages, token_limit, model, context):
     """Add retrieved course context to the conversation sent to the LLM."""
     buffered_messages = [
@@ -189,7 +231,7 @@ def rag_conversation_buffer(messages, token_limit, model, context):
             ),
         },
     ]
-    history = messages[-4:]
+    history = trim_conversation_history(messages)
 
     for message in history:
         candidate = buffered_messages + [message]
@@ -208,6 +250,7 @@ if openai_api_key:
 
     if prompt := st.chat_input("What would you like to ask?"):
         st.session_state.messages.append({"role": "user", "content": prompt})
+        st.session_state.messages = trim_conversation_history(st.session_state.messages)
         with st.chat_message("user"):
             st.markdown(prompt)
 
@@ -233,3 +276,4 @@ if openai_api_key:
         st.session_state.messages.append(
             {"role": "assistant", "content": response}
         )
+        st.session_state.messages = trim_conversation_history(st.session_state.messages)
