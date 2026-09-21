@@ -5,3 +5,7 @@ requests
 beautifulsoup4
 google-genai
 tiktoken
+chromadb
+pysqlite3-binary
+pypdf
+protobuf==3.20
